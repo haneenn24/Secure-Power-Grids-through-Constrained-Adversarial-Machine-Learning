@@ -1,3 +1,77 @@
+"""
+visualize_fdia_results.py
+-------------------------
+
+This module generates ALL plots for the FDIA meter-distribution experiment.
+It takes the final CSV produced by run_fdia_experiment.py and produces the
+full visualization suite used to understand:
+
+    • attack impact      (how much the perceived load is changed)
+    • attack detectability (how large the J-residual becomes)
+    • sensitivity to meter distribution
+    • sensitivity to compromised-meter fraction
+    • variance/stability across random trials
+
+Input:
+    results/fdia_meter_placement.csv
+        Each row = one randomized attack trial
+        Columns include:
+            - meter_distribution
+            - compromised_fraction
+            - true_load
+            - perceived_load_attack
+            - delta_J
+            - perceived_load_drop_percent
+            - success_flag
+        This file is generated entirely by run_fdia_experiment.py.
+
+Output:
+    results/plots/*.png
+    A full collection of publication-quality figures:
+        1) Figure 8-style scatter plots
+           (ΔJ vs. load-drop, colored by attacker strength)
+
+        2) Histograms
+           (distribution of load drop and ΔJ for each distribution)
+
+        3) Success-rate curves
+           (% of trials that achieve both high impact and low detectability)
+
+        4) Heatmaps
+           (median load drop over distributions × attacker fractions)
+
+        5) Figure-8 boxplots (detectability + impact)
+           Matches the structure of the paper’s Figure 8
+           using the same axis ranges and metrics.
+
+        6) Runtime proxy plot
+           A simple visualization showing how ΔJ behaves over trial order,
+           serving as a lightweight proxy for runtime/stability.
+
+Purpose in the pipeline:
+    This is the *last* step of the experiment pipeline.
+    After:
+        run_experiment.py
+            → run_fdia_experiment.py (runs trials + writes CSV)
+            → visualize_fdia_results.py (creates all figures)
+
+Why this file matters:
+    - Converts raw experiment data into interpretable scientific results.
+    - Mirrors the visualization style of the CyberGridSim paper.
+    - Helps compare meter distributions, attacker strengths,
+      and overall vulnerability.
+    - Produces all plots needed for analysis, presentation, or publication.
+
+This script does NOT:
+    - run attacks
+    - run power flow
+    - perform state estimation
+    - modify the experiment
+
+It ONLY reads the final CSV and produces clean visual summaries.
+"""
+
+
 import matplotlib
 matplotlib.use("Agg")   # headless backend
 

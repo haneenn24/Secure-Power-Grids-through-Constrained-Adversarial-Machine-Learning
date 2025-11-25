@@ -1,15 +1,36 @@
 """
-matlab_interface.py  (actually: pandapower backend)
+matlab_interface.py  — Pandapower backend for FDIA experiments
+--------------------------------------------------------------
 
-We use pandapower to simulate a REAL power grid:
-- load a standard IEEE test case (e.g., 118-bus)
-- run power flow
-- define physically meaningful measurements
-- define a simple but real FDIA that changes bus-injection meters
-  at load buses and computes J as a residual.
+This file replaces the MATLAB/Matpower backend from the paper and provides
+a fully Python-based implementation of the experiment pipeline using
+pandapower.
 
-No MATLAB is used here.
+It is responsible for all FDIA "backend" logic:
+    - Loading a real power grid (currently IEEE-118).
+    - Running AC power flow.
+    - Building realistic SCADA measurements (P_inj, P_flow, V_mag).
+    - Running nonlinear weighted-least-squares state estimation.
+    - Computing the J-value (residual) exactly like a bad-data detector.
+    - Applying a simplified but physically meaningful FDIA by modifying
+      the attacker-controlled injection meters.
+    - Returning all metrics used by the experiment loop:
+          true load, perceived load (after attack), J_attack, delta_J.
+
+This file does NOT use MATLAB. It keeps the same interface so that the
+experiment runner (run_fdia_experiment.py) does not need to change.
+
+In summary:
+    • load_real_topology() → loads the grid and caches it
+    • compute_baseline() → baseline (no-attack) state estimation + J
+    • run_fdia_attack() → apply attack + compute J_attack + perceived load
+    • run_state_estimation_for_meters() → real AC state estimation
+    • build_measurements() → produce the SCADA measurement vectors
+
+The experiment runner calls these functions to generate the CSV results
+for all distributions, attacker fractions, and trials.
 """
+
 
 from typing import Any, Dict, List, Optional
 import numpy as np

@@ -1,3 +1,45 @@
+"""
+topology_loader.py — Load the Synthetic South Carolina Grid (ACTIVSg500)
+------------------------------------------------------------------------
+
+This module provides the project’s **official loader** for the real power
+grid used throughout the experiments: the ACTIVSg500 synthetic South Carolina
+system (SC-500), the same topology used in the CyberGridSim paper.
+
+Its purpose is to give all other components (meter placement, FDIA attack,
+baseline computation) access to a consistent, physics-correct pandapower
+network.
+
+Workflow:
+    • Read the MATPOWER “mpc” struct from ACTIVSg500.mat
+    • Convert it into a pandapower network using pandapower.converter.from_mpc
+    • Extract basic topology information needed for the experiments:
+          - list of all buses
+          - list of all lines
+          - list of generator buses
+          - list of load buses
+
+Why this file matters:
+    - It is the ONLY place where the physical topology enters the pipeline.
+    - All FDIA attacks, meter placements, and state estimation experiments
+      depend on the same network returned here.
+    - Ensures the experiment uses the *realistic, large-scale* SC-500 grid,
+      not a toy IEEE system.
+
+Used by:
+    • pandapower_backend.load_real_topology()
+    • meter_placement (needs buses/lines)
+    • run_fdia_experiment.py (ensures consistent topology across trials)
+
+Outputs:
+    (net, topo)
+        net  → the full pandapower network (buses, lines, loads, generators)
+        topo → a lightweight dictionary of key topology sets used everywhere else
+
+This file contains **no attack logic, no meter logic, no SE logic**.
+Its only job is: **load the real grid once, correctly, and consistently**.
+"""
+
 import scipy.io as sio
 import pandapower.converter as pc
 import pandapower as pp

@@ -1,13 +1,64 @@
 """
-run_fdia_experiment.py
+run_fdia_experiment.py — Core FDIA Experiment Driver
+----------------------------------------------------
 
-Implements the FULL experimental loop:
-- meter distributions
-- attacker fractions
-- N random trials
-- baseline (no attack)
-- FDIA attack runs
+This file is the *central engine* of the entire research experiment.
+It performs the FULL experimental loop described in the paper-style
+workflow:
+
+    1. Pick a meter-placement distribution
+    2. Build a list of meters for that distribution
+    3. Compute the baseline (no-attack) measurements
+    4. For each attacker strength (20%, 40%, 60%, 80%):
+           - randomly choose which meters the attacker compromises
+           - run a full FDIA attack simulation
+           - compute perceived load after attack
+           - compute J-value (residual) after attack
+           - measure “impact vs detectability”
+    5. Store *every trial* into a CSV file
+
+This file glues together all core components of the project:
+
+  • topology loading (from pandapower_backend.load_real_topology)
+  • meter placement logic (meter_placement.get_meter_list)
+  • attacker selection (attacker_selection.pick_random_compromised)
+  • baseline state computation (pandapower_backend.compute_baseline)
+  • FDIA attack execution (pandapower_backend.run_fdia_attack)
+
+It does NOT perform physics or optimization itself — it only manages:
+     - looping structure
+     - orchestration
+     - consistency across setups
+     - writing results to CSV
+
+Outputs:
+    A CSV where each row corresponds to a single FDIA trial containing:
+        - topology name
+        - meter distribution
+        - attacker fraction
+        - trial_id
+        - true_load (MW)
+        - perceived load baseline
+        - J_baseline
+        - attacked perceived load
+        - J_attack
+        - delta_J
+        - perceived_load_drop_percent
+        - success_flag
+
+This CSV is then consumed by `visualize_fdia_results.py` to generate:
+    - Figure 8–style scatter plots
+    - histograms
+    - heatmaps
+    - success-rate curves
+    - boxplots
+
+In short:
+    run_experiment.py  → loads YAML → calls THIS FILE
+    THIS FILE         → produces the experimental dataset
+    visualization.py  → turns dataset into final research figures
 """
+
 
 import csv
 import os

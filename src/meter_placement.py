@@ -1,15 +1,35 @@
 """
-meter_placement.py  (OBSERVABILITY-SAFE VERSION)
+meter_placement.py — Meter placement strategies for FDIA experiments
+--------------------------------------------------------------------
 
-Pandapower SE requires:
-- Enough diverse measurements
-- No missing V_mag for reference bus
-- Balanced measurement set
+This file defines all measurement–placement configurations used in the
+experiment pipeline. Each configuration returns the list of meter names
+(or bus indices in paper-style mode) that the defender deploys on the
+grid.
 
-This version ensures observability:
-- For every bus: P_inj + V_mag
-- For every line: P_flow (from side)
+The role of this file:
+    • Generate different SCADA measurement layouts for the same topology.
+    • Provide both paper-style placement and synthetic placements.
+    • Ensure all configurations remain observable for pandapower SE.
+    • Support normalization so all distributions have the same meter count.
+
+Included strategies:
+    • Full observable baseline: P_inj + V_mag on every bus, P_flow on every line.
+    • Uniform / generator-heavy / load-heavy: same base set, different attack behavior later.
+    • Sparse: reduced injections but still observable (all V_mag + half P_inj + all P_flow).
+    • Dense: redundant meters (extra flow meters).
+    • Paper-style: reconstructs SCADA-like metering similar to the paper
+      (load buses, generator buses, all buses for V_mag, line endpoints).
+
+The experiment runner calls:
+    get_meter_list(distribution_name, topology, target_meter_count)
+to obtain the meter layout for each distribution before running baseline
+and FDIA attacks.
+
+This file controls **which meters exist**, while attacker_selection.py
+decides which of them the attacker compromises.
 """
+
 
 from typing import List, Dict
 import numpy as np

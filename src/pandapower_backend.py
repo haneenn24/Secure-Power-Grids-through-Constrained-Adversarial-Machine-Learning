@@ -1,25 +1,76 @@
 """
-pandapower_backend.py
+pandapower_backend.py — FDIA backend (paper-style approximation)
+-----------------------------------------------------------------
 
-Backend that mimics the paper's setup using pandapower only (no MATLAB):
+This module implements the entire *backend engine* used by the
+FDIA experiment pipeline. It replaces the MATLAB/MATPOWER
+infrastructure from the CyberGridSim paper with a fully Python
++ pandapower implementation that preserves the same logic:
 
-- Loads the Synthetic South Carolina grid (ACTIVSg500).
-- Runs AC power flow as the "true" physical state.
-- Defines measurements as bus active power injections at selected buses.
-- Computes a J-like residual (squared error between baseline and attacked
-  measurements).
-- Implements a simple FDIA-style attack:
-    * attacker scales loads at compromised buses to move perceived total
-      load toward a target drop (e.g., 20%).
-    * we recompute AC power flow with attacked loads
-    * we compute J from the change in measurements.
+    • load the Synthetic South Carolina power grid (ACTIVSg500)
+    • run AC power flow to obtain the true physical state
+    • build baseline measurements at selected meter buses
+    • perform an FDIA-style load-scaling attack on compromised buses
+    • recompute AC power flow under attack
+    • compute the “J-value” residual between baseline and attacked
+      measurements (similar to Figure 8 in the paper)
+    • report perceived load and ΔJ for plotting
 
-This is not bit-for-bit identical to MATPOWER WLS SE, but it follows the
-same spirit as Figure 8:
-- impact on perceived load
-- detectability via a residual J
-- dependence on which meters are compromised.
+This backend is the **core physical simulator** used by the experiment
+runner. It receives:
+    - topology_name
+    - meter_list (set by meter_placement.py)
+    - compromised meters (from attacker_selection.py)
+    - target load drop (e.g., 0.20 for 20%)
+and produces the FDIA results saved in the CSV.
+
+### How the backend fits into the experiment flow
+
+The experiment runner calls:
+    start_matlab()                    ← dummy stub (kept for compatibility)
+    load_real_topology()              ← loads ACTIVSg500 via topology_loader
+    compute_baseline()                ← runs true AC power flow, builds
+                                         baseline measurement vector z
+    run_fdia_attack()                 ← attacker scales loads at compromised
+                                         buses, recomputes AC flow, computes:
+                                             * perceived_load_attack
+                                             * J_attack
+                                             * delta_J
+                                             * perceived load drop %
+
+### Key modeling choices
+
+This file follows the spirit of the paper even though pandapower is used
+instead of MATPOWER WLS SE:
+
+    • Measurements:
+        bus active-power injections p_inj at meter buses
+        (the same signal used in many FDIA papers)
+    • J-value:
+        squared difference between baseline and attacked measurements
+        → larger J means easier detection
+        → J ≈ 0 means stealthy attack
+    • Perceived load:
+        computed from the attacked load values after AC power flow
+    • Attack model:
+        attacker scales loads at compromised buses so that the *total*
+        load moves toward (1 − target_drop) × true_load
+        exactly like the objective in the original CyberGridSim FDIA setup
+
+### Summary
+
+This file is responsible for performing all physics-based computations:
+loading the grid, running AC PF, computing injections, creating
+baseline measurement vectors, applying FDIA transformations, and
+calculating J and perceived load shifts. All higher-level experiment
+orchestration (looping over distributions, saving CSV, etc.) is done
+outside in run_fdia_experiment.py.
+
+It is therefore the **heart of the FDIA experiment**, providing the
+numerical behavior that all your plots (Figure-8 scatter, histograms,
+heatmaps, KDE, success-rate, boxplots) depend on.
 """
+
 
 import os
 from typing import Dict, Any, List, Optional
