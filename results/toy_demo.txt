@@ -1,0 +1,231 @@
+===================================================
+TOY DEMO: basic concepts (topology, meters, FDIA, J)
+===================================================
+
+You will see:
+
+1) Topology (grid)
+   - A tiny 3-bus grid:
+       GenBus (generator)
+       MiddleBus
+       LoadBus (big consumer)
+   - Lines: Line1, Line2.
+
+2) Meters
+   - Meters on each bus: 'bus injection' = generation − load.
+   - Meters on lines: 'line flow'.
+
+3) True load vs perceived load
+   - true_load = sum of real loads (from Bus objects).
+   - perceived_load = what the operator reconstructs from meters.
+
+4) FDIA attack
+   - We simulate an attacker changing only:
+       m_bus_MiddleBus
+       m_bus_LoadBus
+   - Target: make perceived load 20% lower.
+
+5) J-like residual
+   - J is computed as sum of squared mismatches between:
+       true injection (generation − load)
+       reported injection (from meters)
+   - If the attack changes meters too much → mismatches grow
+     → J grows → easier to detect.
+
+This is exactly the same intuition as Figure 8 in the paper,
+but with a tiny toy example you can read and modify.
+
+=== TOPOLOGY (TOY GRID) ===
+Buses:
+  GenBus: generation=150.0 MW, load=0.0 MW
+  MiddleBus: generation=0.0 MW, load=20.0 MW
+  LoadBus: generation=0.0 MW, load=120.0 MW
+
+Lines:
+  Line1: GenBus -> MiddleBus, loss=2.0 MW
+  Line2: MiddleBus -> LoadBus, loss=3.0 MW
+
+Meters (TRUE values, before any attack):
+  m_bus_GenBus: type=bus_injection, location=GenBus, true_value=150.00
+  m_bus_MiddleBus: type=bus_injection, location=MiddleBus, true_value=-20.00
+  m_bus_LoadBus: type=bus_injection, location=LoadBus, true_value=-120.00
+  m_line_Line1: type=line_flow, location=Line1, true_value=145.00
+  m_line_Line2: type=line_flow, location=Line2, true_value=123.00
+
+=== BASELINE (NO ATTACK) ===
+True total load: 140.00 MW
+Perceived load (from meters): 140.00 MW
+J (residual): 0.000000
+
+=== UNDER FDIA ATTACK (TOY) ===
+Perceived load (from meters): 168.00 MW
+Perceived load drop: -20.00% (target was 20%)
+J (residual): 592.000000
+
+=== TOY SUMMARY ===
+In this toy grid, the attacker changes only a couple of meters.
+You can see how much they manage to change perceived load
+and how the residual J changes (detection signal).
+This mirrors the same logic as Figure 8: partial control
+makes it harder to stay stealthy and impactful at the same time.
+===================================================
+
+
+
+
+---
+
+# 🔹 TOY GRID (baseline)
+
+```
+   [GenBus]
+  generation = 150
+      |
+      |  Line1 (loss = 2)
+      |  flow = 145
+      v
+ [MiddleBus]
+    load = 20
+      |
+      |  Line2 (loss = 3)
+      |  flow = 123
+      v
+  [LoadBus]
+    load = 120
+```
+
+---
+
+# 🔹 Bus injection meters (true values)
+
+```
+GenBus injection:     +150
+MiddleBus injection:   -20
+LoadBus injection:    -120
+```
+
+(Injection = generation − load)
+
+---
+
+# 🔹 Reconstructed load (baseline)
+
+```
+GenBus:      150 − 150  = 0
+MiddleBus:     0 − (−20)  = 20
+LoadBus:        0 − (−120) = 120
+-----------------------------------
+Total load = 140  (correct)
+```
+
+---
+
+# 🔹 FDIA modifies +20% injection on two buses
+
+```
+MiddleBus injection: -20   →  -20 × 1.2 = -24
+LoadBus injection:   -120  → -120 × 1.2 = -144
+```
+
+---
+
+# 🔹 Reconstructed load (after attack)
+
+```
+MiddleBus:   0 − (−24)   = 24
+LoadBus:      0 − (−144)  = 144
+GenBus:       unchanged   = 0
+-----------------------------------
+Total perceived load = 168 (higher)
+```
+
+---
+
+# 🔹 Residual J (detection signal)
+
+### What J measures (toy version):
+
+For each bus:
+
+```
+mismatch = reported_injection − true_injection
+```
+
+Then
+
+```
+J = sum(mismatch^2)
+```
+
+Now let’s compute each number **step by step**:
+
+---
+
+## ⭐ MiddleBus mismatch
+
+* **True injection** = −20
+* **Reported injection (after attack)** = −24
+
+Mismatch:
+
+```
+mismatch = reported − true
+         = (−24) − (−20)
+         = −24 + 20
+         = −4
+```
+
+Square it:
+
+```
+(−4)^2 = 16
+```
+
+---
+
+## ⭐ LoadBus mismatch
+
+* **True injection** = −120
+* **Reported injection (after attack)** = −144
+
+Mismatch:
+
+```
+mismatch = (−144) − (−120)
+         = −144 + 120
+         = −24
+```
+
+Square it:
+
+```
+(−24)^2 = 576
+```
+
+---
+
+## ⭐ Total J
+
+```
+J = 16 (MiddleBus) + 576 (LoadBus)
+  = 592
+```
+
+---
+
+# ✔ Final rewritten section (clean)
+
+```
+🔹 Residual J calculation
+
+J compares:
+  true injection  vs  reported injection (after attack)
+
+Mismatch per bus:
+- MiddleBus: reported - true = (−24) − (−20) = −4 → (−4)^2 = 16
+- LoadBus  : reported - true = (−144) − (−120) = −24 → (−24)^2 = 576
+
+Total J = 16 + 576 = 592
+```
+
+---

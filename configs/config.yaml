@@ -1,0 +1,21 @@
+topology_name: "ACTIVSg500_real"
+
+meter_distributions:
+  - "paper"
+  - "uniform"
+  - "generator_heavy"
+  - "load_heavy"
+  - "sparse"
+  - "dense"
+
+compromised_fractions:
+  - 0.2
+  - 0.4
+  - 0.6
+  - 0.8
+
+num_trials_per_setting: 1000     # <-- Step 5 main change
+
+target_load_drop: 0.20
+
+output_csv: "results/fdia_meter_placement.csv"

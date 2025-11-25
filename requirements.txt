@@ -1,0 +1,52 @@
+# ============================================================
+# Core Python dependencies for conaml_powergrid project
+# ============================================================
+
+# ---------- Basic scientific stack ----------
+numpy
+pandas
+scipy
+
+# ---------- For plotting (optional but recommended) ----------
+matplotlib
+seaborn
+
+# ---------- For handling topologies (MATPOWER/RAW parsing) ----------
+# pandapower can load MATPOWER files (.m)
+pandapower
+
+# For parsing RAW files if we implement our own loader later
+networkx
+
+# ---------- For structured config files ----------
+pyyaml
+
+# ---------- For MATLAB engine (if using MATLAB FDIA implementation) ----------
+# NOTE: This is NOT pip installable.
+# You must install MATLAB Engine for Python separately.
+# We put it here as documentation only.
+# matlabengineforpython
+
+# ---------- For reproducible experiments & logging ----------
+tqdm
+joblib
+
+# ---------- For checking file paths, YAML schemas (optional) ----------
+jsonschema
+
+# ---------- For data classes support (Python 3.10+ has it built-in) ----------
+# If you use Python < 3.7, install dataclasses manually.
+dataclasses; python_version < "3.7"
+
+# ============================================================
+# Future additions (commented now)
+# Remove comment when needed.
+# ============================================================
+
+# For ML-based anomaly detection (if later needed)
+# scikit-learn
+
+# For GNN-based detectors (if later needed)
+# torch
+# torch-geometric
+
