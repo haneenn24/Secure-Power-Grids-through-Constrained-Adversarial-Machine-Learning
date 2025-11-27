@@ -41,47 +41,104 @@ Its only job is: **load the real grid once, correctly, and consistently**.
 """
 
 import scipy.io as sio
+import numpy as np
 import pandapower.converter as pc
-import pandapower as pp
 import os
+import tempfile
+
+
+def _unwrap_any(x):
+    """
+    Removes MATLAB-style wrappers and returns a clean numpy array or scalar.
+
+    Handles:
+      - object arrays of shape ()
+      - object arrays with 1 element
+      - nested wrappers
+      - numeric Python scalars (int/float)
+      - numeric numpy arrays
+    """
+
+    import numpy as np
+
+    # ----- CASE A: already a plain python scalar -----
+    if isinstance(x, (int, float)):
+        return x
+
+    # ----- CASE B: scalar object array (array(obj), shape=()) -----
+    if isinstance(x, np.ndarray) and x.shape == () and x.dtype == object:
+        return _unwrap_any(x.item())
+
+    # ----- CASE C: single-element object array: array([ arr ], dtype=object) -----
+    if isinstance(x, np.ndarray) and x.dtype == object and x.size == 1:
+        return _unwrap_any(x.flat[0])
+
+    # ----- CASE D: numeric numpy array (valid bus/gen/branch table) -----
+    if isinstance(x, np.ndarray) and x.dtype != object:
+        return x
+
+    # ----- CASE E: python list of lists -----
+    if isinstance(x, list):
+        return np.array(x, dtype=float)
+
+    raise TypeError(f"Cannot unwrap MPC field, got type {type(x)}, value={x}")
+
 
 
 def load_sc500_grid(mat_path: str):
     """
-    Loads the ACTIVSg500 MATPOWER case used in the CyberGridSim paper.
-
-    Args:
-        mat_path: path to ACTIVSg500.mat, e.g.:
-            Topologies/Original/MATPOWER/ACTIVSg500.mat
-
-    Returns:
-        net:  pandapower network
-        topo: dict with basic topology info:
-              {
-                "buses": [...],
-                "lines": [...],
-                "load_buses": [...],
-                "gen_buses": [...]
-              }
+    Loads ACTIVSg500 from .mat, unwraps all MPC fields,
+    reconstructs a valid MATPOWER .m file, and loads via pandapower.
     """
 
     if not os.path.exists(mat_path):
         raise FileNotFoundError(f"MATPOWER file not found: {mat_path}")
 
-    print(f"[INFO] Loading SC-500 MATPOWER case from: {mat_path}")
-
-    # Load MATPOWER .mat file
+    print(f"[INFO] Loading ACTIVSg500 (.mat) from: {mat_path}")
     mat = sio.loadmat(mat_path, squeeze_me=True)
-    if "mpc" in mat:
-        mpc = mat["mpc"]
-    else:
-        raise KeyError("MATPOWER .mat file does not contain 'mpc' structure")
 
-    # Convert MATPOWER mpc → pandapower
-    print("[INFO] Converting MATPOWER → pandapower...")
-    net = pc.from_mpc(mpc, casename_mpc_file="ACTIVSg500")
+    if "mpc" not in mat:
+        raise KeyError("The .mat file does not contain 'mpc'")
 
-    # Build topology dictionary (needed for meter placement, FDIA)
+    mpc_raw = mat["mpc"]
+
+    # Unwrap all fields to clean numeric matrices
+    bus    = _unwrap_any(mpc_raw["bus"])
+    gen    = _unwrap_any(mpc_raw["gen"])
+    branch = _unwrap_any(mpc_raw["branch"])
+    gencost = _unwrap_any(mpc_raw["gencost"])
+    baseMVA = float(_unwrap_any(mpc_raw["baseMVA"]))
+
+    # -------------------------------------------------------------
+    # Write temporary MATPOWER .m file
+    # -------------------------------------------------------------
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".m", delete=False) as tmp:
+        tmp_path = tmp.name
+        tmp.write("function mpc = temp_mpc()\n")
+        tmp.write("mpc.version = '2';\n")
+        tmp.write(f"mpc.baseMVA = {baseMVA};\n")
+
+        def write_matrix(name, M):
+            tmp.write(f"mpc.{name} = [\n")
+            for r in M:
+                tmp.write(" ".join(str(float(x)) for x in r) + ";\n")
+            tmp.write("];\n")
+
+        write_matrix("bus", bus)
+        write_matrix("gen", gen)
+        write_matrix("branch", branch)
+        write_matrix("gencost", gencost)
+
+        tmp.write("end\n")
+
+    print("[INFO] Reconstructed MATPOWER file:", tmp_path)
+
+    # -------------------------------------------------------------
+    # Load through pandapower
+    # -------------------------------------------------------------
+    print("[INFO] Loading file through pandapower …")
+    net = pc.from_mpc(tmp_path)
+
     topo = {
         "buses": list(net.bus.index),
         "lines": list(net.line.index),
@@ -89,10 +146,14 @@ def load_sc500_grid(mat_path: str):
         "gen_buses": list(net.gen.bus.unique()),
     }
 
-    print("=== SC-500 Grid Loaded ===")
-    print(f"  Buses   : {len(topo['buses'])}")
-    print(f"  Lines   : {len(topo['lines'])}")
-    print(f"  Loads   : {len(topo['load_buses'])}")
-    print(f"  Gens    : {len(topo['gen_buses'])}")
+    print("=== ACTIVSg500 Loaded Successfully ===")
+    print(f"  Buses : {len(topo['buses'])}")
+    print(f"  Lines : {len(topo['lines'])}")
+    print(f"  Loads : {len(topo['load_buses'])}")
+    print(f"  Gens  : {len(topo['gen_buses'])}")
 
     return net, topo
+
+
+
+
