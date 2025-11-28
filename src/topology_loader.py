@@ -85,75 +85,84 @@ def _unwrap_any(x):
 
 
 
-def load_sc500_grid(mat_path: str):
-    """
-    Loads ACTIVSg500 from .mat, unwraps all MPC fields,
-    reconstructs a valid MATPOWER .m file, and loads via pandapower.
-    """
+# ===============================================================
+# topology_loader.py  —  fully robust MPC loader (paper-aligned)
+# ===============================================================
+import numpy as np
+import os
+import scipy.io as sio
+import tempfile
 
-    if not os.path.exists(mat_path):
-        raise FileNotFoundError(f"MATPOWER file not found: {mat_path}")
+def load_sc500_grid(mat_path):
+    """
+    Loads ACTIVSg500 MATPOWER case from .mat file (any MPC format):
+        - handles nested numpy objects
+        - handles dtype 'O'
+        - unwraps 0-D arrays
+        - reconstructs consistent MPC dict
+        - rewrites temporary .m file
+        - loads into pandapower via from_mpc()
 
+    Returns:
+        net   : pandapower network
+        topo  : dict {buses, lines, loads, gens, net, ...}
+    """
     print(f"[INFO] Loading ACTIVSg500 (.mat) from: {mat_path}")
-    mat = sio.loadmat(mat_path, squeeze_me=True)
+    raw = sio.loadmat(mat_path)
 
-    if "mpc" not in mat:
-        raise KeyError("The .mat file does not contain 'mpc'")
+    if "mpc" not in raw:
+        raise RuntimeError("MAT file does not contain MPC structure.")
 
-    mpc_raw = mat["mpc"]
+    mpc_raw = raw["mpc"]
 
-    # Unwrap all fields to clean numeric matrices
-    bus    = _unwrap_any(mpc_raw["bus"])
-    gen    = _unwrap_any(mpc_raw["gen"])
-    branch = _unwrap_any(mpc_raw["branch"])
-    gencost = _unwrap_any(mpc_raw["gencost"])
-    baseMVA = float(_unwrap_any(mpc_raw["baseMVA"]))
+    # Unwrapper for ANY shape
+    def unwrap(x):
+        if isinstance(x, np.ndarray):
+            if x.size == 1:
+                return unwrap(x.item())
+            return [unwrap(v) for v in x]
+        return x
 
-    # -------------------------------------------------------------
-    # Write temporary MATPOWER .m file
-    # -------------------------------------------------------------
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".m", delete=False) as tmp:
-        tmp_path = tmp.name
-        tmp.write("function mpc = temp_mpc()\n")
-        tmp.write("mpc.version = '2';\n")
-        tmp.write(f"mpc.baseMVA = {baseMVA};\n")
+    # Extract fields
+    names = mpc_raw.dtype.names
+    mpc = {}
+    for field in names:
+        mpc[field] = np.array(unwrap(mpc_raw[field])).astype(object)
 
-        def write_matrix(name, M):
-            tmp.write(f"mpc.{name} = [\n")
-            for r in M:
-                tmp.write(" ".join(str(float(x)) for x in r) + ";\n")
-            tmp.write("];\n")
+    # Write synthetic MPC file (.m)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".m")
+    tmp_path = tmp.name
 
-        write_matrix("bus", bus)
-        write_matrix("gen", gen)
-        write_matrix("branch", branch)
-        write_matrix("gencost", gencost)
+    with open(tmp_path, "w") as f:
+        f.write("function mpc = case_ACTIVSg500\nmpc = struct();\n")
+        for k, v in mpc.items():
+            arr = np.array(v, dtype=float)
+            f.write(f"mpc.{k} = [\n")
+            for row in arr.reshape(-1, arr.shape[-1]):
+                f.write(" ".join(map(str, row)) + ";\n")
+            f.write("];\n")
+        f.write("end\n")
 
-        tmp.write("end\n")
+    print(f"[INFO] Reconstructed MATPOWER file: {tmp_path}")
 
-    print("[INFO] Reconstructed MATPOWER file:", tmp_path)
-
-    # -------------------------------------------------------------
-    # Load through pandapower
-    # -------------------------------------------------------------
+    # Convert to pandapower
+    import pandapower.converter as pc
     print("[INFO] Loading file through pandapower …")
     net = pc.from_mpc(tmp_path)
+
+    print("=== ACTIVSg500 Loaded Successfully ===")
+    print(f"  Buses : {len(net.bus)}")
+    print(f"  Lines : {len(net.line)}")
+    print(f"  Loads : {len(net.load)}")
+    print(f"  Gens  : {len(net.gen)}")
 
     topo = {
         "buses": list(net.bus.index),
         "lines": list(net.line.index),
-        "load_buses": list(net.load.bus.unique()),
-        "gen_buses": list(net.gen.bus.unique()),
+        "loads": list(net.load.index),
+        "gens": list(net.gen.index),
+        "load_buses": list(net.load["bus"]),
+        "gen_buses": list(net.gen["bus"]),
+        "net": net
     }
-
-    print("=== ACTIVSg500 Loaded Successfully ===")
-    print(f"  Buses : {len(topo['buses'])}")
-    print(f"  Lines : {len(topo['lines'])}")
-    print(f"  Loads : {len(topo['load_buses'])}")
-    print(f"  Gens  : {len(topo['gen_buses'])}")
-
     return net, topo
-
-
-
-

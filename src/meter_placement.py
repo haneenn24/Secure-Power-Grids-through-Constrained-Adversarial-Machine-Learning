@@ -1,204 +1,150 @@
-"""
-meter_placement.py — Final version
-----------------------------------
-
-Defines all SCADA meter-placement distributions for FDIA experiments.
-All distributions return bus indices only (int), consistent with the
-pandapower backend and the FDIA formulation used in this project.
-
-This file supports normalization so each distribution can be scaled to
-the same meter count.
-"""
-
-from typing import List, Dict
+# meter_placement.py
+import random
 import numpy as np
 
-
-# ------------------------------------------------------------
-# PAPER-STYLE DISTRIBUTION
-# ------------------------------------------------------------
-
-def place_meters_paper_style(topology: Dict) -> List[int]:
+def get_pandapower_bus_mapping(net):
     """
-    SCADA-like configuration used in the paper:
-        - injection meter on each load bus
-        - injection meter on each generator bus
-        - voltage meter on every bus
-        - flow meters approximated by adding line endpoints
-    Returns: list of bus indices
+    Maps MATPOWER bus IDs to integer row positions (0..n_bus-1).
     """
-    buses = topology["buses"]
-    load_buses = topology["load_buses"]
-    gen_buses = topology["gen_buses"]
+    pp_ids = list(net.bus.index)         # pandapower bus index (original MATPOWER labels)
+    mapping = {bid: pos for pos, bid in enumerate(pp_ids)}
+    return mapping, pp_ids
+
+
+def place_paper_distribution(topology):
+    """
+    PAPER DISTRIBUTION = 20 measurements per bus (exactly like the original SP23 Grid paper).
+    That is: on each bus, assume 20 independent meters.
+    Final meter count = 500 buses * 20 = 10,000 measurements.
+    """
     net = topology["net"]
+    mapping, pp_ids = get_pandapower_bus_mapping(net)
 
-    meter_set = set()
+    meters = []
 
-    # injection meters
-    for b in load_buses:
-        meter_set.add(b)
+    for bid in pp_ids:
+        pos = mapping[bid]        # always valid 0..n_bus-1
+        for k in range(20):       # 20 meters per bus
+            meters.append(pos)    # store POSITION, not original ID
 
-    for b in gen_buses:
-        meter_set.add(b)
-
-    # voltage magnitude on all buses
-    for b in buses:
-        meter_set.add(b)
-
-    # flow meters -> endpoints
-    for line_id in topology["lines"]:
-        fb = net.line.at[line_id, "from_bus"]
-        tb = net.line.at[line_id, "to_bus"]
-        meter_set.add(int(fb))
-        meter_set.add(int(tb))
-
-    # Convert to sorted python ints
-    return sorted(int(m) for m in meter_set)
+    return sorted(meters)
 
 
-# ------------------------------------------------------------
-# SYNTHETIC DISTRIBUTIONS
-# ------------------------------------------------------------
 
-def place_meters_uniform(topology: Dict) -> List[int]:
+def place_uniform(topology, M):
     """
-    For now identical to paper-style (the difference is only attacker selection).
+    Uniform sampling of M bus positions.
     """
-    return place_meters_paper_style(topology)
-
-
-def place_meters_generator_heavy(topology: Dict) -> List[int]:
-    return place_meters_paper_style(topology)
-
-
-def place_meters_load_heavy(topology: Dict) -> List[int]:
-    return place_meters_paper_style(topology)
-
-
-def place_meters_sparse(topology: Dict) -> List[int]:
-    """
-    Sparse but still observable:
-        - voltage meter at every bus
-        - injection only on half of the buses
-        - endpoints of every line
-    """
-    buses = topology["buses"]
     net = topology["net"]
-
-    meters = set()
-
-    # voltage everywhere
-    for b in buses:
-        meters.add(b)
-
-    # injection on half buses
-    for i, b in enumerate(buses):
-        if i % 2 == 0:
-            meters.add(b)
-
-    # line endpoints
-    for l in topology["lines"]:
-        fb = net.line.at[l, "from_bus"]
-        tb = net.line.at[l, "to_bus"]
-        meters.add(int(fb))
-        meters.add(int(tb))
-
-    return sorted(int(m) for m in meters)
+    nb = len(net.bus)
+    base_positions = list(range(nb))
+    meters = random.sample(base_positions, min(M, nb))
+    return sorted(meters)
 
 
-def place_meters_dense(topology: Dict) -> List[int]:
+
+def place_dense(topology, M):
     """
-    Dense = more redundancy:
-        - all buses
-        - all line endpoints
-        (bus-index based so redundancy is conceptual)
+    Dense = biased to lower-index buses.
     """
-    buses = topology["buses"]
     net = topology["net"]
+    nb = len(net.bus)
 
-    meters = set(buses)
-
-    for l in topology["lines"]:
-        fb = net.line.at[l, "from_bus"]
-        tb = net.line.at[l, "to_bus"]
-        meters.add(int(fb))
-        meters.add(int(tb))
-
-    return sorted(int(m) for m in meters)
+    weights = np.linspace(2.0, 0.1, nb)
+    weights = weights / weights.sum()
+    chosen = np.random.choice(range(nb), size=min(M, nb), replace=False, p=weights)
+    return sorted(chosen.tolist())
 
 
-# ------------------------------------------------------------
-# NORMALIZATION
-# ------------------------------------------------------------
 
-def normalize_meter_count(meter_list: List[int],
-                          target_count: int,
-                          rng: np.random.Generator) -> List[int]:
+def place_sparse(topology, M):
     """
-    Make all distributions comparable by matching the same meter count:
-        - if too many meters → drop randomly
-        - if too few meters → sample with replacement
+    Sparse = biased to higher-index buses.
     """
-    meter_list = [int(m) for m in meter_list]  # ensure ints
-    n = len(meter_list)
+    net = topology["net"]
+    nb = len(net.bus)
 
-    if n == target_count:
-        return sorted(meter_list)
-
-    if n > target_count:
-        # randomly drop
-        keep = rng.choice(meter_list, size=target_count, replace=False)
-        return sorted(int(m) for m in keep)
-
-    # n < target_count → add more by sampling existing ones
-    needed = target_count - n
-    extra = rng.choice(meter_list, size=needed, replace=True)
-    full = meter_list + extra.tolist()
-    return sorted(int(m) for m in full)
+    weights = np.linspace(0.1, 2.0, nb)
+    weights = weights / weights.sum()
+    chosen = np.random.choice(range(nb), size=min(M, nb), replace=False, p=weights)
+    return sorted(chosen.tolist())
 
 
-# ------------------------------------------------------------
-# DISPATCHER
-# ------------------------------------------------------------
 
-def get_meter_list(distribution_name: str,
-                   topology: Dict,
-                   target_meter_count: int = None,
-                   rng: np.random.Generator = None) -> List[int]:
+def place_load_heavy(topology, M):
     """
-    Public API used by run_fdia_experiment.
-    Always returns a list of python ints for bus indices.
+    Sample buses weighted by load magnitude.
+    """
+    net = topology["net"]
+    nb = len(net.bus)
+
+    # compute load per bus
+    load_sum = np.zeros(nb)
+    for _, row in net.load.iterrows():
+        pp_bus = row["bus"]
+        if pp_bus in net.bus.index:
+            pos = list(net.bus.index).index(pp_bus)
+            load_sum[pos] += row["p_mw"]
+
+    weights = load_sum + 1e-3
+    weights = weights / weights.sum()
+    chosen = np.random.choice(range(nb), size=min(M, nb), replace=False, p=weights)
+
+    return sorted(chosen.tolist())
+
+
+
+def place_generator_heavy(topology, M):
+    """
+    Sample buses weighted by generator presence.
+    """
+    net = topology["net"]
+    nb = len(net.bus)
+
+    gen_count = np.zeros(nb)
+    for _, row in net.gen.iterrows():
+        pp_bus = row["bus"]
+        if pp_bus in net.bus.index:
+            pos = list(net.bus.index).index(pp_bus)
+            gen_count[pos] += 1
+
+    weights = gen_count + 1e-3
+    weights = weights / weights.sum()
+    chosen = np.random.choice(range(nb), size=min(M, nb), replace=False, p=weights)
+
+    return sorted(chosen.tolist())
+
+
+
+# ===========================================================
+# MAIN DISPATCH FUNCTION
+# ===========================================================
+
+def select_meter_distribution(topology, dist_name, M):
+    """
+    Returns a VALID list of meter positions (0..nb-1).
     """
 
-    if rng is None:
-        rng = np.random.default_rng()
+    dist_name = dist_name.lower()
 
-    if distribution_name == "paper":
-        meters = place_meters_paper_style(topology)
+    if dist_name == "paper":
+        print("[INFO] Using PAPER distribution (20 meters per bus = 10,000 total)")
+        return place_paper_distribution(topology)
 
-    elif distribution_name == "uniform":
-        meters = place_meters_uniform(topology)
+    elif dist_name == "uniform":
+        return place_uniform(topology, M)
 
-    elif distribution_name == "generator_heavy":
-        meters = place_meters_generator_heavy(topology)
+    elif dist_name == "dense":
+        return place_dense(topology, M)
 
-    elif distribution_name == "load_heavy":
-        meters = place_meters_load_heavy(topology)
+    elif dist_name == "sparse":
+        return place_sparse(topology, M)
 
-    elif distribution_name == "sparse":
-        meters = place_meters_sparse(topology)
+    elif dist_name == "load_heavy":
+        return place_load_heavy(topology, M)
 
-    elif distribution_name == "dense":
-        meters = place_meters_dense(topology)
+    elif dist_name == "generator_heavy":
+        return place_generator_heavy(topology, M)
 
     else:
-        raise ValueError(f"Unknown distribution: {distribution_name}")
-
-    # ensure pure python ints
-    meters = [int(m) for m in meters]
-
-    # normalize if needed
-    if target_meter_count is not None:
-        meters = normalize_meter_count(meters, target_meter_count, rng)
-
-    return meters
+        raise ValueError(f"Unknown meter distribution: {dist_name}")

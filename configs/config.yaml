@@ -1,6 +1,7 @@
-topology: ACTIVSg500_real
+topology: ACTIVSg500
+meters: 500
 
-meter_distributions:
+distributions:
   - paper
   - uniform
   - generator_heavy
@@ -9,14 +10,15 @@ meter_distributions:
   - dense
 
 compromised_fractions:
+  - 0.1
   - 0.2
+  - 0.3
   - 0.4
+  - 0.5
   - 0.6
+  - 0.7
   - 0.8
+  - 0.9
+  - 1
 
-num_trials_per_setting: 1000
-target_load_drop: 0.2
-
-results_csv: results/fdia_meter_placement.csv
-
-matlab_config: {}
+trials: 100

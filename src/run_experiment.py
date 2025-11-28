@@ -1,102 +1,301 @@
-"""
-run_experiment.py — Master entry point for the FDIA experiment pipeline
------------------------------------------------------------------------
+#!/usr/bin/env python3
+# ============================================================
+# run_experiment.py  --  FDIA meter placement (Fig. 8 style)
+# ============================================================
 
-This script is the *top-level orchestrator* of the entire FDIA experiment.
-It does not run physics, attacks, or state estimation itself. Instead, it:
-
-  1. Loads the experiment configuration from configs/config.yaml
-     The YAML file specifies:
-         - which topology to load (e.g., SC500)
-         - which meter placement distributions to test
-         - attacker compromised fractions (20%, 40%, etc.)
-         - number of trials per setting (e.g., N = 100 or 1000)
-         - target load-drop percentage (e.g., 20%)
-         - output CSV file
-
-  2. Prints the loaded configuration so the user can verify it.
-
-  3. Calls:
-        run_fdia_meter_distribution_experiment(...)
-     which performs the full experiment:
-         - loads topology once
-         - loops over all meter distributions
-         - generates meters for each distribution
-         - computes baseline measurements
-         - loops over attacker fractions
-         - runs many random FDIA trials (N)
-         - collects true_load, perceived_load, ΔJ, etc.
-         - writes every result row into a CSV file
-
-This file is therefore the **master controller** of the pipeline.
-It glues together:
-    - YAML configuration
-    - experiment driver (run_fdia_experiment.py)
-    - backend physics engine (pandapower_backend.py)
-    - meter placement strategy (meter_placement.py)
-    - attacker selection logic (attacker_selection.py)
-
-You run the entire research experiment simply with:
-
-    python run_experiment.py
-
-which produces:
-    results/*.csv
-
-These CSV files are then consumed by:
-    visualize_fdia_results.py
-
-to generate:
-    - Figure 8 style plots
-    - histograms
-    - heatmaps
-    - boxplots
-    - success-rate curves
-    - KDE plots
-"""
-
-
-import yaml
 import os
-from run_fdia_experiment import run_fdia_meter_distribution_experiment
+import sys
+import yaml
+import logging
+import traceback
+import copy 
+from typing import List
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+sys.path.insert(0, "src")
+
+from utils_power import load_matpower_file
+from meter_placement import select_meter_distribution
+from fdia_attack import run_fdia_attack
+from utils_io import ensure_dir
+
+
+CONFIG = "configs/config.yaml"
+OUT_CSV = "results/fdia_meter_placement.csv"
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "fdia_experiment.log")
+
+
+# ------------------------------------------------------------
+# Logging setup: print to screen + log file
+# ------------------------------------------------------------
+def setup_logging():
+    ensure_dir(LOG_DIR)
+
+    logger = logging.getLogger("fdia_experiment")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    fmt = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+
+    # File
+    fh = logging.FileHandler(LOG_FILE)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+    return logger
+
+
+# ------------------------------------------------------------
+# CSV appender
+# ------------------------------------------------------------
+def append_result(dist: str,
+                  frac: float,
+                  trial: int,
+                  J0: float,
+                  J1: float,
+                  L0: float,
+                  L1: float):
+    row = {
+        "meter_distribution": dist,
+        "compromised_fraction": frac,
+        "trial": trial,
+        "J0": J0,
+        "J1": J1,
+        "L0": L0,
+        "L1": L1,
+    }
+
+    # Percent change in J
+    denom_J = max(J0, 1e-9)
+    row["percent_delta_J"] = ((J1 - J0) / denom_J) * 100.0
+
+    # Percent change in perceived demand (L0 > 0)
+    denom_L = max(L0, 1e-9)
+    row["perceived_load_drop_percent"] = ((L0 - L1) / denom_L) * 100.0
+
+    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
+    df = pd.DataFrame([row])
+    if not os.path.exists(OUT_CSV):
+        df.to_csv(OUT_CSV, index=False)
+    else:
+        df.to_csv(OUT_CSV, mode="a", header=False, index=False)
+
+
+# ------------------------------------------------------------
+# Select compromised buses: subset of load buses that have meters
+# ------------------------------------------------------------
+def select_compromised_buses(
+    meter_bus_list: List[int],
+    load_buses: List[int],
+    frac: float,
+) -> List[int]:
+    meter_set = set(meter_bus_list)
+    load_set = set(load_buses)
+
+    # Only buses that are both load and metered
+    candidates = sorted(meter_set & load_set)
+    if not candidates:
+        # fallback: compromise among all metered buses
+        candidates = sorted(meter_set)
+
+    k = max(1, int(round(frac * len(candidates))))
+    k = min(k, len(candidates))
+
+    return list(np.random.choice(candidates, size=k, replace=False))
+
+
+# ------------------------------------------------------------
+# Main experiment
+# ------------------------------------------------------------
+def main():
+    logger = setup_logging()
+    logger.info("Loading config...")
+
+    with open(CONFIG, "r") as f:
+        config = yaml.safe_load(f)
+
+    topo_name = config["topology"]
+    logger.info(f"Loading MATPOWER topology: {topo_name}")
+
+    topology = load_matpower_file(topo_name)
+    net = topology["net"]
+    buses = topology["buses"]
+    lines = topology["lines"]
+    load_buses = topology["load_buses"]
+    gen_buses = topology["gen_buses"]
+
+    logger.info("Topology loaded successfully.")
+    logger.info("--------------------------------------------------------")
+    logger.info(f"Buses: {len(buses)}")
+    logger.info(f"Lines: {len(lines)}")
+    logger.info(f"Loads: {len(load_buses)}")
+    logger.info(f"Gens : {len(gen_buses)}")
+    logger.info("--------------------------------------------------------")
+
+    distributions = config["distributions"]
+    compromised_fracs = config["compromised_fractions"]
+    trials = config["trials"]
+    M = config["meters"]  # number of meters to place
+
+    # Make results directory
+    ensure_dir(os.path.dirname(OUT_CSV))
+
+    # For reproducibility (optional)
+    seed = config.get("seed", 42)
+    np.random.seed(seed)
+    logger.info(f"Using random seed = {seed}")
+
+    # --------------------------------------------------------
+    # Loop over meter distributions
+    # --------------------------------------------------------
+    for dist in distributions:
+        logger.info("")
+        logger.info("====================================================")
+        logger.info(f"[RUN] Distribution = {dist}")
+        logger.info("====================================================")
+
+        # Place meters according to distribution
+        meter_bus_list = select_meter_distribution(topology, dist, M)
+        logger.info(
+            f"[INFO] Selected {len(meter_bus_list)} meters "
+            f"for distribution '{dist}'"
+        )
+
+        # Progress bar over all (frac, trial) pairs for this dist
+        total_iters = len(compromised_fracs) * trials
+        progress = tqdm(
+            total=total_iters,
+            desc=f"{dist}",
+            unit="run",
+            leave=False,
+        )
+
+        for frac in compromised_fracs:
+            for t in range(trials):
+                logger.info(
+                    f"[RUN] dist={dist} | fraction={frac} | "
+                    f"trial={t + 1}/{trials}"
+                )
+
+                compromised_bus_list = select_compromised_buses(
+                    meter_bus_list,
+                    load_buses,
+                    frac,
+                )
+
+                try:
+                    # MUST clone network or WLS pollutes it
+                    net_copy = copy.deepcopy(net)
+
+                    J0, J1, L0, L1 = run_fdia_attack(
+                        net_copy,
+                        meter_bus_list,
+                        compromised_bus_list,
+                        load_buses,
+                    )
+
+                    append_result(dist, frac, t, J0, J1, L0, L1)
+
+                    logger.info(
+                        f"[OK]  J0={J0:.4e}, J1={J1:.4e}, "
+                        f"ΔJ%={((J1 - J0) / max(J0, 1e-9)) * 100.0:.2f}, "
+                        f"L0={L0:.4f}, L1={L1:.4f}, "
+                        f"drop%={((L0 - L1) / max(L0, 1e-9)) * 100.0:.2f}"
+                    )
+
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    logger.error(
+                        f"[ERROR] Attack failed for dist={dist}, frac={frac}, trial={t}:\n{tb}"
+                    )
+
+                progress.update(1)
+
+        progress.close()
+
+    logger.info("")
+    logger.info("====================================================")
+    logger.info("Experiment COMPLETED. Results saved to:")
+    logger.info(OUT_CSV)
+    logger.info("====================================================")
+
+
+
+'''
+
+#!/usr/bin/env python3
+# ============================================================
+# run_experiment.py  --  TEMP DEBUG VERSION
+# PURPOSE: PRINT pandapower BUS / RES_BUS columns and exit
+# ============================================================
+
+import os
+import sys
+import yaml
+
+sys.path.insert(0, "src")
+
+from utils_power import load_matpower_file
+
+
+CONFIG = "configs/config.yaml"
 
 
 def main():
-    # Path to config
-    config_path = os.path.join("configs", "config.yaml")
+    print("===================================================")
+    print(" LOADING CONFIG + TOPOLOGY ")
+    print("===================================================\n")
 
-    # Load YAML
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
+    with open(CONFIG, "r") as f:
+        config = yaml.safe_load(f)
 
-    topology_name = cfg["topology"]
-    meter_distributions = cfg["meter_distributions"]
-    compromised_fractions = cfg["compromised_fractions"]
-    num_trials = cfg["num_trials_per_setting"]
-    target_load_drop = cfg["target_load_drop"]
-    results_csv = cfg["results_csv"]
+    topo_name = config["topology"]
+    print(f"Loading MATPOWER topology: {topo_name}")
 
-    matlab_config = cfg.get("matlab_config", {})
+    topology = load_matpower_file(topo_name)
+    net = topology["net"]
 
-    print("Loaded config:")
-    print(f"  Topology              : {topology_name}")
-    print(f"  Distributions         : {meter_distributions}")
-    print(f"  Compromised fractions : {compromised_fractions}")
-    print(f"  Trials per setting    : {num_trials}")
-    print(f"  Target load drop      : {target_load_drop}")
-    print(f"  Output CSV            : {results_csv}\n")
+    print("\n===================================================")
+    print(" DEBUG: net.bus COLUMNS + FIRST ROWS")
+    print("===================================================\n")
 
-    # Run experiment
-    run_fdia_meter_distribution_experiment(
-        results_csv_path=results_csv,
-        topology_name=topology_name,
-        meter_distributions=meter_distributions,
-        compromised_fractions=compromised_fractions,
-        num_trials_per_setting=num_trials,
-        target_load_drop=target_load_drop,
-        config=matlab_config,
-    )
+    print("net.bus.columns =")
+    print(net.bus.columns)
+    print("\nnet.bus.head() =")
+    print(net.bus.head())
 
+    print("\n===================================================")
+    print(" DEBUG: net.res_bus COLUMNS + FIRST ROWS")
+    print("===================================================\n")
 
+    print("net.res_bus.columns =")
+    print(net.res_bus.columns)
+    print("\nnet.res_bus.head() =")
+    print(net.res_bus.head())
+
+    print("\n===================================================")
+    print(" DEBUG FINISHED — EXITING — SEND ME THIS OUTPUT")
+    print("===================================================\n")
+
+    sys.exit(0)
+
+'''
 if __name__ == "__main__":
     main()
+
+
+
