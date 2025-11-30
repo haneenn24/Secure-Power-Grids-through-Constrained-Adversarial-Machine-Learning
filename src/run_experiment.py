@@ -169,7 +169,12 @@ def main():
         logger.info("====================================================")
 
         # Place meters according to distribution
-        meter_bus_list = select_meter_distribution(topology, dist, M)
+        # meter_bus_list = select_meter_distribution(topology, dist, M)
+        if dist == "paper":
+            meter_bus_list = select_meter_distribution(topology, "paper", M)
+        else:
+            meter_bus_list = select_meter_distribution(topology, dist, M)
+
         logger.info(
             f"[INFO] Selected {len(meter_bus_list)} meters "
             f"for distribution '{dist}'"

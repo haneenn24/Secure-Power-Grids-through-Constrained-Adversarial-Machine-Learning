@@ -1,6 +1,7 @@
 topology: ACTIVSg500
 meters: 500
 
+
 distributions:
   - paper
   - uniform
@@ -21,4 +22,4 @@ compromised_fractions:
   - 0.9
   - 1
 
-trials: 100
+trials: 10
