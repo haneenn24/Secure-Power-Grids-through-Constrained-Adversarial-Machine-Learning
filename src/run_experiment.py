@@ -8,7 +8,9 @@ import sys
 import yaml
 import logging
 import traceback
-import copy 
+import copy
+import time
+
 from typing import List
 
 import numpy as np
@@ -30,7 +32,7 @@ LOG_FILE = os.path.join(LOG_DIR, "fdia_experiment.log")
 
 
 # ------------------------------------------------------------
-# Logging setup: print to screen + log file
+# Logging setup
 # ------------------------------------------------------------
 def setup_logging():
     ensure_dir(LOG_DIR)
@@ -44,13 +46,11 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(fmt)
     logger.addHandler(ch)
 
-    # File
     fh = logging.FileHandler(LOG_FILE)
     fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
@@ -80,11 +80,11 @@ def append_result(dist: str,
     }
 
     # Percent change in J
-    denom_J = max(J0, 1e-9)
+    denom_J = max(abs(J0), abs(J1), 1e-9)
     row["percent_delta_J"] = ((J1 - J0) / denom_J) * 100.0
 
-    # Percent change in perceived demand (L0 > 0)
-    denom_L = max(L0, 1e-9)
+    # Percent change in perceived demand
+    denom_L = max(abs(L0), abs(L1), 1e-6)
     row["perceived_load_drop_percent"] = ((L0 - L1) / denom_L) * 100.0
 
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
@@ -149,12 +149,10 @@ def main():
     distributions = config["distributions"]
     compromised_fracs = config["compromised_fractions"]
     trials = config["trials"]
-    M = config["meters"]  # number of meters to place
+    M = config["meters"]  # number of meters to place (non-paper dists)
 
-    # Make results directory
     ensure_dir(os.path.dirname(OUT_CSV))
 
-    # For reproducibility (optional)
     seed = config.get("seed", 42)
     np.random.seed(seed)
     logger.info(f"Using random seed = {seed}")
@@ -168,19 +166,13 @@ def main():
         logger.info(f"[RUN] Distribution = {dist}")
         logger.info("====================================================")
 
-        # Place meters according to distribution
-        # meter_bus_list = select_meter_distribution(topology, dist, M)
-        if dist == "paper":
-            meter_bus_list = select_meter_distribution(topology, "paper", M)
-        else:
-            meter_bus_list = select_meter_distribution(topology, dist, M)
+        meter_bus_list = select_meter_distribution(topology, dist, M)
 
         logger.info(
             f"[INFO] Selected {len(meter_bus_list)} meters "
             f"for distribution '{dist}'"
         )
 
-        # Progress bar over all (frac, trial) pairs for this dist
         total_iters = len(compromised_fracs) * trials
         progress = tqdm(
             total=total_iters,
@@ -195,7 +187,7 @@ def main():
                     f"[RUN] dist={dist} | fraction={frac} | "
                     f"trial={t + 1}/{trials}"
                 )
-
+                start_time = time.time()   # <--- ADDED
                 compromised_bus_list = select_compromised_buses(
                     meter_bus_list,
                     load_buses,
@@ -203,7 +195,6 @@ def main():
                 )
 
                 try:
-                    # MUST clone network or WLS pollutes it
                     net_copy = copy.deepcopy(net)
 
                     J0, J1, L0, L1 = run_fdia_attack(
@@ -215,17 +206,21 @@ def main():
 
                     append_result(dist, frac, t, J0, J1, L0, L1)
 
+                    elapsed = time.time() - start_time   # <--- ADDED
+
                     logger.info(
-                        f"[OK]  J0={J0:.4e}, J1={J1:.4e}, "
-                        f"ΔJ%={((J1 - J0) / max(J0, 1e-9)) * 100.0:.2f}, "
+                        f"[OK]  time={elapsed:.2f}s | "
+                        f"J0={J0:.4e}, J1={J1:.4e}, "
+                        f"ΔJ%={((J1 - J0) / max(abs(J0), 1e-9)) * 100.0:.2f}, "
                         f"L0={L0:.4f}, L1={L1:.4f}, "
-                        f"drop%={((L0 - L1) / max(L0, 1e-9)) * 100.0:.2f}"
+                        f"drop%={((L0 - L1) / max(abs(L0), 1e-6)) * 100.0:.2f}"
                     )
 
-                except Exception as e:
+                except Exception:
                     tb = traceback.format_exc()
                     logger.error(
-                        f"[ERROR] Attack failed for dist={dist}, frac={frac}, trial={t}:\n{tb}"
+                        f"[ERROR] Attack failed for dist={dist}, "
+                        f"frac={frac}, trial={t}:\n{tb}"
                     )
 
                 progress.update(1)
@@ -239,68 +234,5 @@ def main():
     logger.info("====================================================")
 
 
-
-'''
-
-#!/usr/bin/env python3
-# ============================================================
-# run_experiment.py  --  TEMP DEBUG VERSION
-# PURPOSE: PRINT pandapower BUS / RES_BUS columns and exit
-# ============================================================
-
-import os
-import sys
-import yaml
-
-sys.path.insert(0, "src")
-
-from utils_power import load_matpower_file
-
-
-CONFIG = "configs/config.yaml"
-
-
-def main():
-    print("===================================================")
-    print(" LOADING CONFIG + TOPOLOGY ")
-    print("===================================================\n")
-
-    with open(CONFIG, "r") as f:
-        config = yaml.safe_load(f)
-
-    topo_name = config["topology"]
-    print(f"Loading MATPOWER topology: {topo_name}")
-
-    topology = load_matpower_file(topo_name)
-    net = topology["net"]
-
-    print("\n===================================================")
-    print(" DEBUG: net.bus COLUMNS + FIRST ROWS")
-    print("===================================================\n")
-
-    print("net.bus.columns =")
-    print(net.bus.columns)
-    print("\nnet.bus.head() =")
-    print(net.bus.head())
-
-    print("\n===================================================")
-    print(" DEBUG: net.res_bus COLUMNS + FIRST ROWS")
-    print("===================================================\n")
-
-    print("net.res_bus.columns =")
-    print(net.res_bus.columns)
-    print("\nnet.res_bus.head() =")
-    print(net.res_bus.head())
-
-    print("\n===================================================")
-    print(" DEBUG FINISHED — EXITING — SEND ME THIS OUTPUT")
-    print("===================================================\n")
-
-    sys.exit(0)
-
-'''
 if __name__ == "__main__":
     main()
-
-
-
